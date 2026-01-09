@@ -81,30 +81,33 @@ class Config(object):
             print(f"{key}: {value}")
 
 
-def load_config_from_yaml(yaml_path, save_dir):
+def load_config_from_yaml(yaml_path):
     """
     Load configuration from YAML file and return a Config object.
     Uses SimpleNamespace to convert YAML dict to object with attribute access.
     """
-    file_path = os.path.join(save_dir, "config.json")
     
+    # Load from YAML
+    with open(yaml_path, 'r') as f:
+        config_dict = yaml.safe_load(f)
+    config = SimpleNamespace(**config_dict)
+
     # Check if the configuration file exists (resume from checkpoint)
-    if os.path.exists(file_path):
-        with open(file_path, "r") as f:
+    if config.model_dir is not None:
+        breakpoint()
+        model_config = os.path.join(config.model_dir, "config.json")
+        with open(model_config, "r") as f:
             config_data = json.load(f)
         config = SimpleNamespace(**config_data)
-        print(f'Config {file_path} loaded')
+        print(f'Config {model_config} loaded')
     else:
-        # Load from YAML
-        with open(yaml_path, 'r') as f:
-            config_dict = yaml.safe_load(f)
-        config = SimpleNamespace(**config_dict)
-        
         # Save config as JSON
-        os.makedirs(save_dir, exist_ok=True)
-        with open(file_path, "w") as f:
+        model_dir = get_next_model_dir()
+        config.model_dir = model_dir
+        os.makedirs(model_dir, exist_ok=True)
+        model_config = os.path.join(model_dir, "config.json")
+        with open(model_config, "w") as f:
             json.dump(vars(config), f, indent=4)
-        print(f'New config {file_path} saved from {yaml_path}')
     
     # Print all variables
     for key, value in vars(config).items():

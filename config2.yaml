@@ -1,5 +1,10 @@
-# minDiT hyperparameters
+model_dir: null
+fid_real_dir: null
+iter_interval: 100
+fid_interval: 100
 data_dir: data/cifar10/
+save_dir: output
+# minDiT hyperparameters
 img_size: [32, 32]  # (height, width)
 channels: 3
 batch_size: 128

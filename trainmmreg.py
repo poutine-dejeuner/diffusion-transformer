@@ -249,7 +249,7 @@ def train(model_dir, fid_real_dir,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', action="store_true", default=False)
-    parser.add_argument('--config', type=str, default="config.yaml")
+    parser.add_argument('--config', type=str, default="config2.yaml")
     args = parser.parse_args()
 
     # Load config from YAML or Python file

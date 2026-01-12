@@ -4,7 +4,12 @@ iter_interval: 100
 fid_interval: 100
 data_dir: data/cifar10/
 save_dir: output
+# mmreg params
+mmreg_weight: 0.1
+topo_algo: PCA
+n_components: 100
 # minDiT hyperparameters
+dtype: float
 img_size: [32, 32]  # (height, width)
 channels: 3
 batch_size: 128

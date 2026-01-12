@@ -61,6 +61,23 @@ class ImageLoader(Dataset):
             img = self.transform(img)
         return img
 
+
+def create_dataset(data_dir, img_size, batch_size, channels=3):
+    all_files = _list_image_files(data_dir)
+    if isinstance(img_size, (tuple, list)):
+        resize_size = img_size
+    else:
+        resize_size = (img_size, img_size)
+    transform = transforms.Compose([
+        transforms.Resize(resize_size),
+        transforms.ToTensor(),
+        transforms.Lambda(lambda t: (t * 2) - 1)
+    ])
+
+    dataset = ImageLoader(all_files, transform, channels)
+    return dataset
+
+
 def create_loader(data_dir, img_size, batch_size, channels=3):
     all_files = _list_image_files(data_dir)
     if isinstance(img_size, (tuple, list)):

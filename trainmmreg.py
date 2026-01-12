@@ -4,6 +4,7 @@ Author: Emilio Morales (mil.mor.mor@gmail.com)
 '''
 import torch
 from torch import optim
+from torch.utils.data import DataLoader
 import time
 import os
 import warnings
@@ -11,13 +12,13 @@ from copy import deepcopy
 from collections import OrderedDict
 import argparse
 import wandb
-import yaml
 from types import SimpleNamespace
 from fid import get_fid
-from image_datasets import create_loader
-from dit import DiT
-from utils import * 
+from image_datasets import create_loader, create_dataset
+from dit import DiTWithEmbedding
+from utils import *
 from diff_utils import *
+from mmreg import get_dataset_and_topo_repr, TopoAlgoType, manifold_matching_reg
 
 from icecream import ic, install
 install()
@@ -36,6 +37,7 @@ def update_ema(ema_model, model, decay=0.999):
     for name, param in model_params.items():
         ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
 
+
 def requires_grad(model, flag=True):
     """
     Set requires_grad flag for all parameters in a model.
@@ -43,7 +45,8 @@ def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
 
-def train(model_dir, fid_real_dir, 
+
+def train(model_dir, fid_real_dir,
           iter_interval, fid_interval, conf):
     # Initialize wandb
     if not conf.d:
@@ -52,7 +55,7 @@ def train(model_dir, fid_real_dir,
             config=vars(conf),
             name=os.path.basename(model_dir)
         )
-    
+
     data_dir = conf.data_dir
     if fid_real_dir == None:
         fid_real_dir = data_dir
@@ -84,47 +87,51 @@ def train(model_dir, fid_real_dir,
     weight_decay = getattr(conf, 'weight_decay', 0.0)
 
     # dataset
-    train_loader = create_loader(
+    dataset = create_dataset(
         data_dir, (img_h, img_w), batch_size, channels
     )
-    
+    topo_algo = TopoAlgoType.PCA
+    dtype = getattr(torch, conf.dtype) if isinstance(conf.dtype, str) else conf.dtype
+    dataset = get_dataset_and_topo_repr(dataset, dtype, topo_algo,
+                                        conf.n_components)
+    train_loader = DataLoader(dataset, conf.batch_size)
+
     # model
-    model = DiT(img_size, dim, patch_size,
-            depth, heads, mlp_dim, k, in_channels=channels)
+    model = DiTWithEmbedding(img_size, dim, patch_size,
+                             depth, heads, mlp_dim, k, in_channels=channels)
     diffusion = Diffusion()
-    optimizer = optim.AdamW(model.parameters(), lr=lr, 
+    optimizer = optim.AdamW(model.parameters(), lr=lr,
                             betas=(0.9, 0.999), weight_decay=weight_decay)
     loss_fn = torch.nn.MSELoss()
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     model.to(device)
 
     # create ema
-    ema = deepcopy(model).to(device)  
+    ema = deepcopy(model).to(device)
     requires_grad(ema, False)
-    
+
     # logs and ckpt config
     gen_dir = os.path.join(model_dir, 'fid')
     log_img_dir = os.path.join(model_dir, 'log_img')
     log_dir = os.path.join(model_dir, 'log_dir')
-    # writer = SummaryWriter(log_dir)
     os.makedirs(gen_dir, exist_ok=True)
     os.makedirs(log_img_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     last_ckpt = os.path.join(model_dir, './last_ckpt.pt')
     best_ckpt = os.path.join(model_dir, './best_ckpt.pt')
-    
+
     if os.path.exists(last_ckpt):
         ckpt = torch.load(last_ckpt)
-        start_iter = ckpt['iter'] + 1 # start from iter + 1
+        start_iter = ckpt['iter'] + 1  # start from iter + 1
         best_fid = ckpt['best_fid']
         model.load_state_dict(ckpt['model'])
         ema.load_state_dict(ckpt['ema'])
         optimizer.load_state_dict(ckpt['opt'])
-        print(f'Checkpoint restored at iter {start_iter}; ' 
-                f'best FID: {best_fid}')
+        print(f'Checkpoint restored at iter {start_iter}; '
+              f'best FID: {best_fid}')
     else:
         start_iter = 1
-        best_fid = 1000. # init with big value
+        best_fid = 1000.  # init with big value
         print(f'New model')
 
     # plot shape
@@ -134,33 +141,41 @@ def train(model_dir, fid_real_dir,
     start = time.time()
     train_loss = 0.0
     grad_norm_total = 0.0
-    update_ema(ema, model, decay=ema_decay) 
+    update_ema(ema, model, decay=ema_decay)
     model.train()
     ema.eval()  # EMA model should always be in eval mode
+    train_iter = iter(train_loader)
     for idx in range(n_iter):
         i = idx + start_iter
-        
+
         # Learning rate warmup
         if i <= warmup_steps:
             lr_scale = i / warmup_steps
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr * lr_scale
-        
-        inputs = next(train_loader)
+
+        try:
+            inputs, data_repr = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            inputs, data_repr = next(train_iter)
         inputs = inputs.to(device)
         xt, t, target = diffusion.diffuse(inputs)
         # zero the parameter gradients
         optimizer.zero_grad()
-    
+
         # forward + backward + optimize
-        outputs = model(xt, t)
+        outputs, hidden_repr = model(xt, t)
         loss = loss_fn(outputs, target)
+        mmreg = manifold_matching_reg(hidden_repr, data_repr, alpha=conf)
+        loss += mmreg
         loss.backward()
-        
+
         # Gradient clipping
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), grad_clip)
         grad_norm_total += grad_norm.item()
-        
+
         optimizer.step()
         update_ema(ema, model)
         train_loss += loss.item()
@@ -169,7 +184,8 @@ def train(model_dir, fid_real_dir,
             # plot
             gen_batch = diffusion.sample(ema, sz, steps=steps, seed=seed)
             plot_path = os.path.join(log_img_dir, f'{i:04d}.png')
-            plot_batch(deprocess(gen_batch), plot_shape, plot_path, img_size=(img_h, img_w))
+            plot_batch(deprocess(gen_batch), plot_shape,
+                       plot_path, img_size=(img_h, img_w))
             # metrics
             train_loss /= iter_interval
             grad_norm_avg = grad_norm_total / iter_interval
@@ -178,12 +194,7 @@ def train(model_dir, fid_real_dir,
             print(f'Time for iter {i} is {elapsed_time:.4f}sec '
                   f'Train loss: {train_loss:.4f} Grad norm: {grad_norm_avg:.4f} '
                   f'LR: {current_lr:.6f}')
-            # writer.add_scalar('train_loss_iter', train_loss, i)
-            # writer.add_scalar('train_loss_n_img', train_loss, i * batch_size)
-            # writer.add_scalar('grad_norm', grad_norm_avg, i)
-            # writer.add_scalar('learning_rate', current_lr, i)
-            # writer.flush()
-            
+
             # wandb logging
             if not conf.d:
                 wandb.log({
@@ -191,11 +202,8 @@ def train(model_dir, fid_real_dir,
                     'grad_norm': grad_norm_avg,
                     'learning_rate': current_lr,
                     'iteration': i,
-                    # 'n_images': i * batch_size,
-                    # 'time_per_interval': elapsed_time,
-                    # 'generated_samples': wandb.Image(plot_path)
                 }, step=i)
-            
+
             train_loss = 0.0
             grad_norm_total = 0.0
             start = time.time()
@@ -205,7 +213,7 @@ def train(model_dir, fid_real_dir,
             # fid
             print('Generating eval batches...')
             gen_batches(
-                diffusion, ema, n_fid_real, gen_batch_size, 
+                diffusion, ema, n_fid_real, gen_batch_size,
                 steps, gen_dir, (img_h, img_w), channels
             )
             fid = get_fid(
@@ -213,10 +221,7 @@ def train(model_dir, fid_real_dir,
                 device, fid_batch_size
             )
             print(f'FID: {fid}')
-            # writer.add_scalar('FID_iter', fid, i)
-            # writer.add_scalar('FID_n_img', fid, i * batch_size)
-            # writer.flush()
-            
+
             # wandb logging
             if not conf.d:
                 wandb.log({
@@ -234,17 +239,18 @@ def train(model_dir, fid_real_dir,
                 'best_fid': min(fid, best_fid),
                 'train_loss': train_loss
             }
-            
+
             torch.save(ckpt_data, last_ckpt)
             print(f'Checkpoint saved at iter {i}')
-            
+
             if fid <= best_fid:
                 torch.save(ckpt_data, best_ckpt)
                 best_fid = fid
                 print(f'Best checkpoint saved at iter {i}')
-                           
+
             start = time.time()
             model.train()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -254,11 +260,11 @@ def main():
 
     # Load config from YAML or Python file
     conf = load_config_from_yaml(args.config)
-    
+
     conf.d = args.d
-    
+
     train(
-        conf.model_dir, conf.fid_real_dir, 
+        conf.model_dir, conf.fid_real_dir,
         conf.iter_interval, conf.fid_interval, conf
     )
 

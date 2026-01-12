@@ -181,3 +181,20 @@ class DiT(nn.Module):
         x = x.reshape([B, -1, H, W])
         x = self.ps(x)
         return x
+
+
+class DiTWithEmbedding(DiT):
+    def forward(self, x, t):
+        t = self.emb(t)
+        x = self.patches(x)
+        B, C, H, W = x.shape
+        x = x.permute([0, 2, 3, 1]).reshape([B, H * W, C])
+        x += self.pos_embedding
+        x_embedding = x.clone()
+        for layer in self.transformer:
+            x = layer(x, t)
+
+        x = self.final(x, t).permute([0, 2, 1])
+        x = x.reshape([B, -1, H, W])
+        x = self.ps(x)
+        return x, x_embedding

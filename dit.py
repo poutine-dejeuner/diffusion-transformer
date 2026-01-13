@@ -184,7 +184,7 @@ class DiT(nn.Module):
 
 
 class DiTWithEmbedding(DiT):
-    def forward(self, x, t):
+    def forward(self, x, t, return_embedding=False):
         t = self.emb(t)
         x = self.patches(x)
         B, C, H, W = x.shape
@@ -197,4 +197,7 @@ class DiTWithEmbedding(DiT):
         x = self.final(x, t).permute([0, 2, 1])
         x = x.reshape([B, -1, H, W])
         x = self.ps(x)
-        return x, x_embedding
+        
+        if return_embedding:
+            return x, x_embedding
+        return x

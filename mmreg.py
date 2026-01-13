@@ -28,10 +28,12 @@ def manifold_matching_reg(x, x_embed, alpha=1.0):
     """
     Compute a manifold matching regularization term between original data and embeddings.
     This encourages the embedding to preserve local neighborhood structure using Euclidean distances.
+    
+    Now computes distances only for the batch, not the full dataset.
 
     Args:
-        x: Original data tensor of shape (N, D1)
-        x_embed: Embedded data tensor of shape (N, D2)
+        x: Original data tensor of shape (batch_size, D1)
+        x_embed: Embedded data tensor of shape (batch_size, D2) - batch representations from TDA
         alpha: Regularization weight
 
     Returns:
@@ -41,12 +43,12 @@ def manifold_matching_reg(x, x_embed, alpha=1.0):
     N = x.shape[0]
     x_flat = x.reshape(N, -1)
 
-    # compute x pairwise distance matrix
+    # compute x pairwise distance matrix (batch only)
     xdist = torch.cdist(x_flat, x_flat)
     xdistnorm = torch.norm(xdist, p="fro")
     xdist = xdist / (xdistnorm + eps)
 
-    # compute x_embed pairwise data matrix
+    # compute x_embed pairwise distance matrix (batch only)
     x_embeddist = torch.cdist(x_embed, x_embed)
     x_embeddistnorm = torch.norm(x_embeddist, p="fro")
     x_embeddist = x_embeddist / (x_embeddistnorm + eps)
@@ -99,9 +101,9 @@ def topo_representation(data: np.ndarray, algo: TopoAlgoType, n_dimensions:
         transformed_data = tsne.fit_transform(data)
 
     # compute the pairwise distances in the transformed space
-    distances = pairwise_distances(transformed_data)
+    # distances = pairwise_distances(transformed_data)
 
-    return distances
+    return transformed_data
 
 
 class PadToDivisible(nn.Module):
@@ -185,17 +187,29 @@ def dataset_to_array(dataset, max_samples=None):
     return data.cpu().numpy()
 
 
+class TopoDataset(Dataset):
+    """Dataset that computes TDA distances on-the-fly for each batch."""
+    def __init__(self, data, topo_repr):
+        self.data = data
+        self.topo_repr = topo_repr
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx], self.topo_repr[idx]
+
+
 def get_dataset_and_topo_repr(dataset, dtype, topo_algo: TopoAlgoType,
                               n_components: int):
     data = dataset_to_array(dataset)
     topo_repr = topo_representation(data, topo_algo, n_components)
     topo_repr = torch.from_numpy(topo_repr).to(dtype=dtype)
     data = torch.from_numpy(data).to(dtype=dtype)
-    topo_repr = torch.cdist(topo_repr, topo_repr)
 
     # pad
     pad_fn = PadToDivisible(divisor=8)
     data = pad_fn(data)
 
-    dataset = TensorDataset(data)
-    return dataset, topo_repr
+    dataset = TopoDataset(data, topo_repr)
+    return dataset

@@ -51,6 +51,7 @@ def train(model_dir, fid_real_dir,
     # Initialize wandb
     if not conf.d:
         wandb.init(
+            entity="nanophoto",
             project="diffusion-transformer",
             config=vars(conf),
             name=os.path.basename(model_dir)
@@ -145,7 +146,7 @@ def train(model_dir, fid_real_dir,
     model.train()
     ema.eval()  # EMA model should always be in eval mode
     train_iter = iter(train_loader)
-    for idx in range(n_iter):
+    for idx in tqdm(range(n_iter)):
         i = idx + start_iter
 
         # Learning rate warmup
@@ -160,15 +161,16 @@ def train(model_dir, fid_real_dir,
             train_iter = iter(train_loader)
             inputs, data_repr = next(train_iter)
         inputs = inputs.to(device)
+        data_repr = data_repr.to(device)
         xt, t, target = diffusion.diffuse(inputs)
         # zero the parameter gradients
         optimizer.zero_grad()
 
         # forward + backward + optimize
-        outputs, hidden_repr = model(xt, t)
+        outputs, hidden_repr = model(xt, t, return_embedding=True)
         loss = loss_fn(outputs, target)
-        mmreg = manifold_matching_reg(hidden_repr, data_repr, alpha=conf)
-        loss += mmreg
+        mmreg_loss = manifold_matching_reg(hidden_repr, data_repr, alpha=conf.mmreg_weight)
+        loss += mmreg_loss
         loss.backward()
 
         # Gradient clipping

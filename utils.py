@@ -94,7 +94,6 @@ def load_config_from_yaml(yaml_path):
 
     # Check if the configuration file exists (resume from checkpoint)
     if config.model_dir is not None:
-        breakpoint()
         model_config = os.path.join(config.model_dir, "config.json")
         with open(model_config, "r") as f:
             config_data = json.load(f)
